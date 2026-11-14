@@ -120,8 +120,23 @@ public final class Bot {
         o.keyJump.setDown(jump);
         o.keyShift.setDown(sneak);
         o.keySprint.setDown(sprint);
+        o.keyDown.setDown(false);
+        o.keyLeft.setDown(false);
+        o.keyRight.setDown(false);
         if (!sprint && mc().player != null && mc().player.isSprinting() && !forward) mc().player.setSprinting(false);
         pressing = forward || jump || sneak || sprint;
+    }
+
+    public static void strafe(boolean fwd, boolean back, boolean left, boolean right, boolean sneak) {
+        var o = mc().options;
+        o.keyUp.setDown(fwd);
+        o.keyDown.setDown(back);
+        o.keyLeft.setDown(left);
+        o.keyRight.setDown(right);
+        o.keyShift.setDown(sneak);
+        o.keyJump.setDown(false);
+        o.keySprint.setDown(false);
+        pressing = true;
     }
 
     /** Roughly standing still (closet waits for this before inventory clicks). */

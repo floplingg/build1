@@ -14,7 +14,11 @@ import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
-/** Follows a PathFinder path by holding movement keys and steering the camera. */
+/**
+ * Follows a PathFinder path. Uses "pure pursuit": always steer at a point a little way ahead
+ * on the path, and count a node as done once we've passed it (not only when we stand dead on it).
+ * That stops the old overshoot -> turn around -> overshoot back-and-forth.
+ */
 public final class Walker {
     public enum Status { IDLE, WALKING, DONE, FAILED }
 
@@ -28,7 +32,7 @@ public final class Walker {
     private int stuck;
     private double lastDist = Double.MAX_VALUE;
     private Status status = Status.IDLE;
-    private float walkPitch = 10f;
+    private float pitchBias;
 
     public Status status() { return status; }
     public boolean busy() { return status == Status.WALKING; }
@@ -39,7 +43,7 @@ public final class Walker {
         idx = 0;
         stuck = 0;
         lastDist = Double.MAX_VALUE;
-        walkPitch = 4f + Bot.rng().nextFloat() * 14f;
+        pitchBias = (Bot.rng().nextFloat() - 0.5f) * 8f;
         status = p == null ? Status.FAILED : (p.isEmpty() ? Status.DONE : Status.WALKING);
     }
 
@@ -57,53 +61,85 @@ public final class Walker {
         return -1;
     }
 
-    public static boolean hasScaffold() {
-        return scaffoldSlot() >= 0 || Bot.mc().player.getAbilities().instabuild;
+    public static Item scaffoldItem() {
+        int s = scaffoldSlot();
+        if (s >= 0) return Bot.mc().player.getInventory().getItem(s).getItem();
+        return Bot.mc().player.getAbilities().instabuild ? Items.DIRT : null;
     }
+
+    private static Vec3 center(BlockPos b) { return new Vec3(b.getX() + 0.5, b.getY(), b.getZ() + 0.5); }
 
     public void tick() {
         if (status != Status.WALKING) return;
         LocalPlayer p = Bot.mc().player;
         if (idx >= path.size()) { finish(); return; }
         PathFinder.Step step = path.get(idx);
-        BlockPos node = step.pos();
+        if (step.pillar()) { pillar(p, step); return; }
+
         Vec3 pos = p.position();
-        double dx = node.getX() + 0.5 - pos.x, dz = node.getZ() + 0.5 - pos.z;
-        double horiz = Math.sqrt(dx * dx + dz * dz);
+        BlockPos node = step.pos();
+        Vec3 nc = center(node);
+        double horiz = Math.hypot(nc.x - pos.x, nc.z - pos.z);
         double dy = node.getY() - pos.y;
+        boolean grounded = p.onGround() || p.isInWater();
 
-        if (step.pillar()) { pillar(p, node); return; }
-
-        if (horiz < (Config.closet() ? 0.4 : 0.3) && Math.abs(dy) < 0.6 && (p.onGround() || p.isInWater())) {
+        // node reached, or passed (we're beyond it in the direction of the next node)
+        boolean passed = false;
+        if (idx + 1 < path.size() && !path.get(idx + 1).pillar() && horiz < 1.1 && Math.abs(dy) < 0.6) {
+            Vec3 nn = center(path.get(idx + 1).pos());
+            double sx = nn.x - nc.x, sz = nn.z - nc.z;
+            passed = (pos.x - nc.x) * sx + (pos.z - nc.z) * sz > 0;
+        }
+        if ((horiz < 0.35 && Math.abs(dy) < 0.6 && grounded) || passed) {
             idx++;
             stuck = 0;
             lastDist = Double.MAX_VALUE;
-            if (idx >= path.size()) finish();
-            return;
+            if (idx >= path.size()) { finish(); return; }
+            if (path.get(idx).pillar()) { Bot.keys(false, false, false); return; }
+            node = path.get(idx).pos();
+            nc = center(node);
+            horiz = Math.hypot(nc.x - pos.x, nc.z - pos.z);
+            dy = node.getY() - pos.y;
         }
-        // Steer toward a point a little further along the path so turns are rounder.
-        Vec3 aimAt = new Vec3(node.getX() + 0.5, 0, node.getZ() + 0.5);
-        if (Config.closet() && idx + 1 < path.size() && horiz < 1.2 && !path.get(idx + 1).pillar()) {
-            BlockPos nx = path.get(idx + 1).pos();
-            aimAt = aimAt.lerp(new Vec3(nx.getX() + 0.5, 0, nx.getZ() + 0.5), 0.5);
-        }
-        float yaw = (float) (Math.atan2(aimAt.z - pos.z, aimAt.x - pos.x) * 180.0 / Math.PI) - 90f;
+
+        // pure pursuit: steer at a point ~1.3 blocks ahead along the path (just the node near the end)
+        Vec3 steer = lookAhead(pos, 1.3);
+        float yaw = (float) (Math.atan2(steer.z - pos.z, steer.x - pos.x) * 180.0 / Math.PI) - 90f;
         boolean facing;
         if (Config.closet()) {
-            Rotator.aim(yaw, walkPitch);
-            facing = Math.abs(Mth.wrapDegrees(p.getYRot() - yaw)) < 50;
+            // gaze a few blocks ahead at the ground, like a person walking
+            Vec3 gaze = lookAhead(pos, 4.0);
+            float pitch = Mth.clamp(Bot.anglesTo(Bot.eye(), new Vec3(gaze.x, gaze.y + 0.4, gaze.z))[1] + pitchBias, -10f, 45f);
+            Rotator.aim(yaw, pitch);
+            facing = Math.abs(Mth.wrapDegrees(p.getYRot() - yaw)) < 55;
         } else {
             Bot.setRotation(yaw, 10f);
             facing = true;
         }
-        boolean jump = (dy > 0.5 && horiz < 1.6) || p.isInWater();
-        boolean forward = horiz > 0.12 && facing;
-        boolean sprint = forward && !jump && straightAhead() >= 4;
+        boolean jump = (dy > 0.5 && horiz < 1.7) || (p.isInWater() && dy > -0.5);
+        boolean last = idx == path.size() - 1;
+        boolean forward = facing && (horiz > (last ? 0.2 : 0.05));
+        boolean sprint = forward && !jump && !last && straightAhead() >= 4;
         Bot.keys(forward, jump, false, sprint);
 
         double dist = horiz + Math.abs(dy);
-        if (dist < lastDist - 0.05) { lastDist = dist; stuck = 0; } else stuck++;
-        if (stuck > (Config.closet() ? 70 : 50) || horiz > 4 || dy < -4.5) fail();
+        if (dist < lastDist - 0.04) { lastDist = dist; stuck = 0; } else stuck++;
+        if (stuck > (Config.closet() ? 60 : 45) || horiz > 4.5 || dy < -4.5) fail();
+    }
+
+    /** Point `dist` blocks further along the path from the current node. */
+    private Vec3 lookAhead(Vec3 from, double dist) {
+        Vec3 prev = new Vec3(from.x, path.get(idx).pos().getY(), from.z);
+        double left = dist;
+        for (int i = idx; i < path.size(); i++) {
+            if (path.get(i).pillar()) return center(path.get(Math.max(idx, i - 1)).pos());
+            Vec3 c = center(path.get(i).pos());
+            double seg = Math.hypot(c.x - prev.x, c.z - prev.z);
+            if (seg >= left && seg > 1e-6) return prev.add(c.subtract(prev).scale(left / seg));
+            left -= seg;
+            prev = c;
+        }
+        return prev;
     }
 
     /** How many upcoming steps continue in the same flat direction. */
@@ -120,8 +156,9 @@ public final class Walker {
         return n;
     }
 
-    private void pillar(LocalPlayer p, BlockPos node) {
-        BlockPos under = node.below(); // the block we need to create
+    private void pillar(LocalPlayer p, PathFinder.Step step) {
+        BlockPos node = step.pos();
+        BlockPos under = node.below(); // the block we need to create (where our feet are now)
         var lvl = Bot.mc().level;
         if (!lvl.getBlockState(under).canBeReplaced()) {
             Bot.keys(false, false, false);
@@ -129,22 +166,28 @@ public final class Walker {
             else if (++stuck > 40) fail();
             return;
         }
+        // centre ourselves on the column first, or the jump lands us next to it
+        double ox = under.getX() + 0.5 - p.getX(), oz = under.getZ() + 0.5 - p.getZ();
         BlockPos support = under.below();
         Vec3 top = Bot.faceCenter(support, Direction.UP);
         float downPitch = Config.closet() ? 82f + Bot.rng().nextFloat() * 6f : 90f;
         if (Config.closet()) Rotator.aim(p.getYRot(), downPitch); else Bot.setRotation(p.getYRot(), 90f);
 
-        int slot = scaffoldSlot();
+        Item item = step.pillarItem() != null ? step.pillarItem() : scaffoldItem();
+        if (item == null) { fail(); return; }
+        int slot = Bot.find(item);
         if (slot < 0) {
-            if (!Bot.creativeGive(Items.DIRT)) { fail(); return; }
-        } else if (p.getInventory().getSelectedSlot() != slot && slot < 9) {
-            p.getInventory().setSelectedSlot(slot);
-        } else if (slot >= 9) {
-            Bot.hold(slot);
+            if (!Bot.creativeGive(item)) { fail(); return; }
             return;
         }
+        if (!Bot.hold(slot)) return;
         if (Config.closet() && !Rotator.settled()) { Bot.keys(false, false, false); return; }
-        if (p.onGround()) { Bot.keys(false, true, false); if (++stuck > 60) fail(); return; }
+        if (p.onGround()) {
+            if (ox * ox + oz * oz > 0.06) { Bot.keys(false, false, false); nudge(p, ox, oz); if (++stuck > 60) fail(); return; }
+            Bot.keys(false, true, false);
+            if (++stuck > 80) fail();
+            return;
+        }
         Bot.keys(false, false, false);
         if (p.getY() < under.getY() + 1.05) return; // not high enough yet
         if (!(p.getMainHandItem().getItem() instanceof BlockItem)) return;
@@ -160,6 +203,15 @@ public final class Walker {
         }
         Bot.mc().gameMode.useItemOn(p, InteractionHand.MAIN_HAND, hit);
         p.swing(InteractionHand.MAIN_HAND);
+    }
+
+    /** Small step toward the column centre while looking down: walk with the keys relative to our yaw. */
+    private static void nudge(LocalPlayer p, double ox, double oz) {
+        double yawRad = Math.toRadians(p.getYRot());
+        double fwdX = -Math.sin(yawRad), fwdZ = Math.cos(yawRad);
+        double rightX = -fwdZ, rightZ = fwdX;
+        double f = ox * fwdX + oz * fwdZ, r = ox * rightX + oz * rightZ;
+        Bot.strafe(f > 0.1, f < -0.1, r < -0.1, r > 0.1, true); // sneak so we can't slip off
     }
 
     private void finish() {

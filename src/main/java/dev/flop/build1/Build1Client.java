@@ -13,6 +13,8 @@ import dev.flop.build1.task.BuildTask;
 import dev.flop.build1.task.MineTask;
 import dev.flop.build1.task.Task;
 import dev.flop.build1.ui.Build1Screen;
+import dev.flop.build1.ui.DigScreen;
+import dev.flop.build1.ui.Preview;
 import java.util.List;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
@@ -73,6 +75,11 @@ public class Build1Client implements ClientModInitializer {
                 .executes(c -> { openMenu(); return 1; })
                 .then(ClientCommandManager.literal("build").executes(c -> { startBuild(); return 1; }))
                 .then(ClientCommandManager.literal("mine").executes(c -> { startMine(); return 1; }))
+                .then(ClientCommandManager.literal("dig").executes(c -> {
+                    Minecraft mc = Minecraft.getInstance();
+                    mc.execute(() -> mc.setScreen(new DigScreen(null)));
+                    return 1;
+                }))
                 .then(ClientCommandManager.literal("stop").executes(c -> { stop(true); return 1; }))
                 .then(ClientCommandManager.literal("pause").executes(c -> { togglePause(); return 1; }))
                 .then(ClientCommandManager.literal("pos1").executes(c -> { setCorner(1, null); return 1; })
@@ -110,6 +117,7 @@ public class Build1Client implements ClientModInitializer {
         while (pos1Key.consumeClick()) setCorner(1, null);
         while (pos2Key.consumeClick()) setCorner(2, null);
         while (chestKey.consumeClick()) toggleChest();
+        Preview.tick(mc);
 
         if (task == null || mc.player == null || mc.level == null || mc.gameMode == null) { Rotator.clear(); return; }
         if (mc.screen instanceof AbstractSignEditScreen sign) { handleSign(sign); return; }
@@ -183,9 +191,15 @@ public class Build1Client implements ClientModInitializer {
             msg("§cSet two corners first (menu → Corner 1/2 at crosshair, /build1 pos1 & pos2), or make an area selection in Litematica.");
             return;
         }
+        startMine(box);
+    }
+
+    public static void startMine(Box box) {
+        stop(false);
         if (box.volume() > 2_000_000) { msg("§cThat area is huge (" + box.volume() + " blocks). Pick something smaller than 2M."); return; }
         task = new MineTask(box);
         paused = false;
+        Preview.show(box, 200);
     }
 
     /** Our own corners win; otherwise Litematica's current area selection. */

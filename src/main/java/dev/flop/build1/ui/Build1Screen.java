@@ -55,7 +55,7 @@ public class Build1Screen extends Screen {
                 () -> Config.airPlace = !Config.airPlace);
 
         // --- Miner column ---
-        btn(right, y, cw, () -> "§lMine area", () -> { Build1Client.startMine(); onClose(); });
+        btn(right, y, cw, () -> "§lDig out...", () -> minecraft.setScreen(new DigScreen(this)));
         btn(right, y + 22, 73, () -> "Corner 1", () -> Build1Client.setCorner(1, null));
         btn(right + 77, y + 22, 73, () -> "Corner 2", () -> Build1Client.setCorner(2, null));
         btn(right, y + 44, cw, () -> "Clear corners", () -> { Build1Client.corner1 = null; Build1Client.corner2 = null; });

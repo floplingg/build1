@@ -31,6 +31,12 @@ public final class Config {
     /** Materials chests, saved as x,y,z;x,y,z */
     public static String chests = "";
 
+    public enum DigShape { HOLE, TUNNEL, CORNERS }
+    public enum FullInv { PAUSE, DROP_JUNK }
+    public static DigShape digShape = DigShape.HOLE;
+    public static int digWidth = 5, digLength = 5, digDepth = 3, digHeight = 3;
+    public static FullInv fullInv = FullInv.PAUSE;
+
     public static boolean closet() { return mode == Mode.CLOSET; }
 
     /** Ticks to wait between placing / starting to break blocks (0 = every tick). */
@@ -80,6 +86,12 @@ public final class Config {
         survival = b(p, "survival", survival);
         restockMinutes = i(p, "restockMinutes", restockMinutes, 1, 30);
         chests = p.getProperty("chests", "");
+        digWidth = i(p, "digWidth", digWidth, 1, 64);
+        digLength = i(p, "digLength", digLength, 1, 128);
+        digDepth = i(p, "digDepth", digDepth, 1, 64);
+        digHeight = i(p, "digHeight", digHeight, 1, 16);
+        try { digShape = DigShape.valueOf(p.getProperty("digShape", digShape.name()).trim()); } catch (IllegalArgumentException ignored) {}
+        try { fullInv = FullInv.valueOf(p.getProperty("fullInv", fullInv.name()).trim()); } catch (IllegalArgumentException ignored) {}
         try { mode = Mode.valueOf(p.getProperty("mode", mode.name()).trim().toUpperCase()); } catch (IllegalArgumentException ignored) {}
         try { reach = Math.max(2, Math.min(6, Double.parseDouble(p.getProperty("reach", "" + reach)))); } catch (NumberFormatException ignored) {}
     }
@@ -103,6 +115,12 @@ public final class Config {
         p.setProperty("survival", "" + survival);
         p.setProperty("restockMinutes", "" + restockMinutes);
         p.setProperty("chests", chests);
+        p.setProperty("digWidth", "" + digWidth);
+        p.setProperty("digLength", "" + digLength);
+        p.setProperty("digDepth", "" + digDepth);
+        p.setProperty("digHeight", "" + digHeight);
+        p.setProperty("digShape", digShape.name());
+        p.setProperty("fullInv", fullInv.name());
         p.setProperty("mode", mode.name());
         try {
             Files.createDirectories(file().getParent());

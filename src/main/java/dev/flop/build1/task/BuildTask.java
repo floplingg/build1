@@ -26,7 +26,7 @@ import net.minecraft.world.phys.Vec3;
  */
 public final class BuildTask implements Task {
 
-    private enum Kind { PLACE, BREAK, WATER, WATERLOG }
+    private enum Kind { PLACE, BREAK, WATER, WATERLOG, INTERACT }
 
     private record Work(BlockPos pos, BlockState want, Kind kind, long key) {}
 
@@ -51,6 +51,10 @@ public final class BuildTask implements Task {
     private final List<Work> work = new ArrayList<>();
     private final Map<Long, Integer> skipUntil = new HashMap<>();
     private final Map<Long, Integer> attempts = new HashMap<>();
+    private final Map<Long, Integer> noPlan = new HashMap<>();
+    private final Map<Long, Integer> walkCount = new HashMap<>();
+    private final Set<Long> pendingPlace = new HashSet<>();
+    private int lastProgress, lastPlacedSeen;
     private final Map<Item, Integer> missing = new LinkedHashMap<>();
     private final Walker walker = new Walker();
     private final Breaker breaker = new Breaker();
@@ -129,6 +133,15 @@ public final class BuildTask implements Task {
         if (aim != null) { tickAim(); return; }
         if (cooldown > 0) { cooldown--; if (walker.busy()) walker.tick(); return; }
 
+        // watchdog: placing stopped but there's still work -> park the stuck blocks for a while
+        if (placed != lastPlacedSeen) { lastPlacedSeen = placed; lastProgress = t; walkCount.clear(); }
+        if (t - lastProgress > 900 && !work.isEmpty()) {
+            for (Work w : work) skip(w.pos, 400);
+            lastProgress = t;
+            walker.stop();
+            state = "stuck - skipping ahead";
+        }
+
         // 3) act on what's in reach, in serpentine order
         Vec3 eye = Bot.eye();
         List<Work> near = new ArrayList<>();
@@ -148,7 +161,11 @@ public final class BuildTask implements Task {
                 breaker.tick(w.pos);
                 return;
             }
-            r = (w.kind == Kind.PLACE) ? startPlace(w) : startBucket(w);
+            r = switch (w.kind) {
+                case PLACE -> startPlace(w);
+                case INTERACT -> startInteract(w);
+                default -> startBucket(w);
+            };
             if (r == Result.DONE) {
                 placed++;
                 done++;
@@ -163,8 +180,11 @@ public final class BuildTask implements Task {
                 cooldown = 1;
                 return;
             } else {
-                if (r == Result.NO_PLAN) noSupport++;
-                skip(w.pos, r == Result.MISSING ? 100 : 40);
+                if (r == Result.NO_PLAN) {
+                    noSupport++;
+                    int n = noPlan.merge(w.pos.asLong(), 1, Integer::sum);
+                    skip(w.pos, 40 * (1 << Math.min(n - 1, 3))); // 2s, 4s, 8s, 16s...
+                } else skip(w.pos, 100);
             }
         }
         if (done > 0) { state = "placing"; cooldown = Bot.actionPause(); return; }
@@ -186,6 +206,13 @@ public final class BuildTask implements Task {
         if (!Config.walk) { state = "waiting (walking off)"; for (Work w : work) if (!skipped(w.pos)) skip(w.pos, 40); return; }
         if (t - lastPlan < 5) return;
         lastPlan = t;
+        // walked to this one 3 times without placing anything in between: it's not working, move on
+        if (walkCount.merge(target.pos.asLong(), 1, Integer::sum) > 3) {
+            skip(target.pos, 600);
+            unreachable++;
+            walkCount.remove(target.pos.asLong());
+            return;
+        }
         walkTarget = target.pos;
         state = "pathing";
         PathFinder.Goal goal = new ReachGoal(target.pos, Bot.reach() - 0.4);
@@ -194,7 +221,9 @@ public final class BuildTask implements Task {
             if (slot >= 0) goal = new PlaceGoal(target.pos, target.want, p.getInventory().getItem(slot), Bot.reach() - 0.2, Config.closet());
         }
         Rotator.clear();
-        List<PathFinder.Step> path = PathFinder.find(p.blockPosition(), goal, Config.pillar && Walker.hasScaffold(), pos -> false);
+        // first try not to end up standing where a block still has to go; then allow it
+        List<PathFinder.Step> path = PathFinder.find(p.blockPosition(), goal, this::pillarItem, pos -> pendingPlace.contains(pos.asLong()));
+        if (path == null) path = PathFinder.find(p.blockPosition(), goal, this::pillarItem, pos -> false);
         if (path == null) { skip(target.pos, 200); unreachable++; return; }
         walker.start(path);
         if (walker.status() == Walker.Status.DONE) skip(target.pos, 40); // already "there" but couldn't place
@@ -268,9 +297,33 @@ public final class BuildTask implements Task {
         return Result.AIMING;
     }
 
+    private Result startInteract(Work w) {
+        PlacementSolver.Plan plan = Interact.plan(w.pos, Config.closet());
+        if (plan == null) return Result.NO_PLAN;
+        aim = new AimJob();
+        aim.w = w;
+        aim.plan = plan;
+        aim.slot = Bot.mc().player.getInventory().getSelectedSlot();
+        return Result.AIMING;
+    }
+
+    /** What to place under ourselves to climb at this spot: the build's own block if it belongs there, else scaffold. */
+    private net.minecraft.world.item.Item pillarItem(BlockPos pos) {
+        if (box.contains(pos)) {
+            if (layerFilter != null && !layerFilter.test(pos)) return null;
+            BlockState want = schem.getBlockState(pos);
+            if (want.isAir() || PlacementSolver.oriented(want) || !want.isCollisionShapeFullBlock(schem, pos)
+                    || want.getBlock() instanceof net.minecraft.world.level.block.BaseEntityBlock
+                    || want.getBlock() instanceof net.minecraft.world.level.block.FallingBlock) return null;
+            Item it = want.getBlock().asItem();
+            return Bot.find(it) >= 0 || Bot.mc().player.getAbilities().instabuild ? it : null;
+        }
+        return Config.pillar ? Walker.scaffoldItem() : null;
+    }
+
     private void walkTo(BlockPos pos) {
         LocalPlayer p = Bot.mc().player;
-        List<PathFinder.Step> path = PathFinder.find(p.blockPosition(), new ReachGoal(pos, Bot.reach() - 0.6), false, x -> false);
+        List<PathFinder.Step> path = PathFinder.find(p.blockPosition(), new ReachGoal(pos, Bot.reach() - 0.6), null, x -> false);
         if (path != null) { walker.start(path); walkTarget = pos; }
     }
 
@@ -283,6 +336,7 @@ public final class BuildTask implements Task {
         BlockState real = mc.level.getBlockState(a.w.pos);
         boolean doneAlready = switch (a.w.kind) {
             case PLACE -> PlacementSolver.satisfied(real, a.w.want);
+            case INTERACT -> !Interact.needs(real, a.w.want);
             case WATER -> Bucket.isWaterSource(real);
             case WATERLOG -> Bucket.isWaterlogged(real);
             default -> false;
@@ -301,6 +355,31 @@ public final class BuildTask implements Task {
 
         Vec3 eye = Bot.eye();
         float ry = p.getYRot(), rp = p.getXRot();
+        if (a.w.kind == Kind.INTERACT) {
+            BlockHitResult hit;
+            if (Config.closet()) {
+                hit = PlacementSolver.raycast(eye, ry, rp, Bot.reach() + 0.5);
+                if (!Interact.hitOk(a.w.pos, hit, ry)) {
+                    if (a.ticks % 12 == 0) {
+                        PlacementSolver.Plan np = Interact.plan(a.w.pos, true);
+                        if (np == null) { skip(a.w.pos, 100); aim = null; Rotator.clear(); } else a.plan = np;
+                    }
+                    return;
+                }
+            } else {
+                Bot.faceNow(a.plan.yaw(), a.plan.pitch());
+                hit = a.plan.hit();
+            }
+            mc.gameMode.useItemOn(p, InteractionHand.MAIN_HAND, hit);
+            p.swing(InteractionHand.MAIN_HAND);
+            state = "setting block state";
+            lastProgress = t;
+            skip(a.w.pos, 6); // look again once the server answers (repeaters / note blocks need several clicks)
+            aim = null;
+            Rotator.clear();
+            cooldown = Bot.actionPause();
+            return;
+        }
         if (a.plan != null) {
             ItemStack held = p.getMainHandItem();
             BlockHitResult hit;
@@ -356,6 +435,7 @@ public final class BuildTask implements Task {
         // slide the window up past layers that are completely done
         while (true) {
             work.clear();
+            pendingPlace.clear();
             missing.clear();
             wrong = 0;
             unknown = 0;
@@ -366,6 +446,7 @@ public final class BuildTask implements Task {
                         m.set(x, y, z);
                         Work w = examine(lvl, m, creative, have);
                         if (w != null) work.add(w);
+                        if (w != null && w.kind == Kind.PLACE) pendingPlace.add(w.pos.asLong());
                     }
                 }
             }
@@ -398,14 +479,15 @@ public final class BuildTask implements Task {
                 return new Work(m.immutable(), want, Kind.BREAK, key);
             return null;
         }
+        if (PlacementSolver.skip(want)) return null;
         if (PlacementSolver.satisfied(real, want)) {
+            if (Interact.needs(real, want)) return new Work(m.immutable(), want, Kind.INTERACT, key + 5);
             if (Bucket.wantsWaterlogged(want) && !Bucket.isWaterlogged(real)) {
                 needItem(Items.WATER_BUCKET, creative, have, Items.BUCKET);
                 return new Work(m.immutable(), want, Kind.WATERLOG, key + 7);
             }
             return null;
         }
-        if (PlacementSolver.skip(want)) return null;
         if (real.canBeReplaced() || PlacementSolver.needsStacking(real, want)) {
             needItem(want.getBlock().asItem(), creative, have, null);
             return new Work(m.immutable(), want, Kind.PLACE, key);
@@ -458,6 +540,8 @@ public final class BuildTask implements Task {
                 layer = box.min().getY();
                 skipUntil.clear();
                 attempts.clear();
+                noPlan.clear();
+                walkCount.clear();
                 Build1Client.msg("Pass " + pass + ": going back over blocks that couldn't be placed yet.");
             } else {
                 finished = true;

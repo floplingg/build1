@@ -98,6 +98,12 @@ public final class PlacementSolver {
         return a.getValue(p).equals(b.getValue(p));
     }
 
+    /** Has a direction/half/rotation that depends on how it's placed. */
+    public static boolean oriented(BlockState s) {
+        for (Property<?> p : IMPORTANT) if (s.hasProperty(p)) return true;
+        return false;
+    }
+
     /** Blocks we never place directly (they come with their other half, or have no item). */
     public static boolean skip(BlockState want) {
         Block b = want.getBlock();

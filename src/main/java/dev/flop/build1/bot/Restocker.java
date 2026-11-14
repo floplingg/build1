@@ -69,7 +69,7 @@ public final class Restocker {
                 if (walker.status() == Walker.Status.FAILED) { walker.stop(); chestIdx++; return false; }
                 if (t - lastPlan < 5) return false;
                 lastPlan = t;
-                var path = PathFinder.find(p.blockPosition(), new ReachGoal(chest, Bot.reach() - 0.6), false, x -> false);
+                var path = PathFinder.find(p.blockPosition(), new ReachGoal(chest, Bot.reach() - 0.6), null, x -> false);
                 if (path == null) { chestIdx++; return false; }
                 walker.start(path);
                 if (walker.status() == Walker.Status.DONE && !Safety.inReach(chest)) chestIdx++;
