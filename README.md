@@ -25,6 +25,8 @@ It goes bottom-up, one layer at a time:
 - crouches when it has to click a block with a GUI (e.g. a sign on a chest)
 - fills sign text from the schematic and closes the sign editor
 - stacks double slabs, candles, sea pickles, snow layers
+- right-clicks blocks to match the schematic: open fence gates/doors/trapdoors, repeater delay, comparator mode, note block pitch, levers, inverted daylight sensors
+- climbs piles/towers by pillaring with the build's own blocks (or dirt/cobble outside the build), and avoids standing where a block still has to go
 - places water sources and waterlogs blocks with a water bucket, refilling empty buckets from nearby water (or the materials chests)
 - builds in serpentine strips: up one 4-wide strip, over, back down the next, over...
 - follows Litematica's render layers (Layer mode), so you can build one layer range at a time
@@ -39,8 +41,15 @@ When it runs out of something it walks to the chests, opens them and shift-click
 
 Options: **Replace wrong** (break blocks that don't match), **Clear extra blocks** (break blocks where the schematic has air), **Pillar up**, **Blocks/tick**, **Delay**.
 
-## Area miner
-Set the area by either:
+## Dig Out (area miner)
+Press **B → Dig out...** (or `/build1 dig`):
+- **Hole**: pick width / length / depth with the +/- buttons. It digs down, starting 1 block in front of you.
+- **Tunnel**: width / length / height, dug forward at your feet level.
+- **Custom corners**: for any other shape.
+
+A glowing outline shows exactly what will be dug before you press **Dig**. It warns you if you have no pickaxe or are low on space. When the inventory is full it either pauses or drops junk (cobble, dirt, gravel, netherrack, etc.); you choose which. The HUD shows % done and time left.
+
+Custom corners can also be set by:
 - looking at a block and pressing **Corner 1** / **Corner 2** in the menu (or binding the keys, or `/build1 pos1`, `/build1 pos2`, with optional `x y z`), or
 - making an area selection in Litematica (used when no corners are set).
 
