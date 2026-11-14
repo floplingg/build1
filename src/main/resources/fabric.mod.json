@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "build1",
+  "version": "${version}",
+  "name": "Build1",
+  "description": "Baritone-style auto builder for your loaded Litematica schematic, plus an auto area miner. Walks, picks the right blocks, faces them correctly and places or mines them for you.",
+  "authors": ["floplingg"],
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["dev.flop.build1.Build1Client"]
+  },
+  "mixins": ["build1.mixins.json"],
+  "depends": {
+    "fabricloader": ">=0.18.0",
+    "fabric-api": "*",
+    "minecraft": "~1.21.11",
+    "java": ">=21"
+  },
+  "suggests": { "litematica": "*" }
+}
