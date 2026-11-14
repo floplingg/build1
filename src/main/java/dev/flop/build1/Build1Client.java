@@ -4,6 +4,11 @@ import com.mojang.blaze3d.platform.InputConstants;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import dev.flop.build1.LitematicaBridge.Box;
 import dev.flop.build1.bot.Bot;
+import dev.flop.build1.bot.ChestRegistry;
+import dev.flop.build1.bot.Rotator;
+import dev.flop.build1.mixin.SignEditScreenAccessor;
+import net.minecraft.client.gui.screens.inventory.AbstractSignEditScreen;
+import net.minecraft.world.level.block.entity.SignBlockEntity;
 import dev.flop.build1.task.BuildTask;
 import dev.flop.build1.task.MineTask;
 import dev.flop.build1.task.Task;
@@ -27,7 +32,9 @@ import net.minecraft.world.phys.HitResult;
 public class Build1Client implements ClientModInitializer {
     public static final String MOD_ID = "build1";
 
-    public static KeyMapping menuKey, stopKey, pauseKey, pos1Key, pos2Key;
+    public static KeyMapping menuKey, stopKey, pauseKey, pos1Key, pos2Key, chestKey;
+    private static Object signScreen;
+    private static int signDelay;
 
     private static Task task;
     private static boolean paused;
@@ -36,6 +43,7 @@ public class Build1Client implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         Config.load();
+        ChestRegistry.load();
 
         KeyMapping.Category cat = KeyMapping.Category.register(Identifier.fromNamespaceAndPath(MOD_ID, "main"));
         menuKey = KeyBindingHelper.registerKeyBinding(new KeyMapping("key.build1.menu", InputConstants.Type.KEYSYM, InputConstants.KEY_B, cat));
@@ -43,6 +51,9 @@ public class Build1Client implements ClientModInitializer {
         pauseKey = KeyBindingHelper.registerKeyBinding(new KeyMapping("key.build1.pause", InputConstants.Type.KEYSYM, InputConstants.UNKNOWN.getValue(), cat));
         pos1Key = KeyBindingHelper.registerKeyBinding(new KeyMapping("key.build1.pos1", InputConstants.Type.KEYSYM, InputConstants.UNKNOWN.getValue(), cat));
         pos2Key = KeyBindingHelper.registerKeyBinding(new KeyMapping("key.build1.pos2", InputConstants.Type.KEYSYM, InputConstants.UNKNOWN.getValue(), cat));
+        chestKey = KeyBindingHelper.registerKeyBinding(new KeyMapping("key.build1.chest", InputConstants.Type.KEYSYM, InputConstants.UNKNOWN.getValue(), cat));
+        // per-frame mouse-like turning for closet mode (runs every rendered frame, draws nothing)
+        HudElementRegistry.addLast(Identifier.fromNamespaceAndPath(MOD_ID, "aim"), (g, delta) -> Rotator.frame());
 
         ClientTickEvents.END_CLIENT_TICK.register(Build1Client::tick);
         ClientPlayConnectionEvents.DISCONNECT.register((h, c) -> stop(false));
@@ -68,7 +79,17 @@ public class Build1Client implements ClientModInitializer {
                         .then(xyz(1)))
                 .then(ClientCommandManager.literal("pos2").executes(c -> { setCorner(2, null); return 1; })
                         .then(xyz(2)))
-                .then(ClientCommandManager.literal("clear").executes(c -> { corner1 = corner2 = null; msg("Miner corners cleared."); return 1; }))));
+                .then(ClientCommandManager.literal("clear").executes(c -> { corner1 = corner2 = null; msg("Miner corners cleared."); return 1; }))
+                .then(ClientCommandManager.literal("chest").executes(c -> { toggleChest(); return 1; })
+                        .then(ClientCommandManager.literal("clear").executes(c -> { ChestRegistry.clear(); msg("Materials chests cleared."); return 1; }))
+                        .then(ClientCommandManager.literal("scan").executes(c -> {
+                            int n = ChestRegistry.scan(Minecraft.getInstance().player.blockPosition(), 48);
+                            msg("Found " + n + " chest(s) with a \"materials\" sign. Total materials chests: " + ChestRegistry.count());
+                            return 1;
+                        })))
+                .then(ClientCommandManager.literal("mode")
+                        .then(ClientCommandManager.literal("blatant").executes(c -> { Config.mode = Config.Mode.BLATANT; Config.save(); msg("Mode: §cBlatant"); return 1; }))
+                        .then(ClientCommandManager.literal("closet").executes(c -> { Config.mode = Config.Mode.CLOSET; Config.save(); msg("Mode: §aCloset"); return 1; })))));
     }
 
     private static com.mojang.brigadier.builder.ArgumentBuilder<net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource, ?> xyz(int which) {
@@ -88,9 +109,11 @@ public class Build1Client implements ClientModInitializer {
         while (pauseKey.consumeClick()) togglePause();
         while (pos1Key.consumeClick()) setCorner(1, null);
         while (pos2Key.consumeClick()) setCorner(2, null);
+        while (chestKey.consumeClick()) toggleChest();
 
-        if (task == null || mc.player == null || mc.level == null || mc.gameMode == null) return;
-        if (paused) return;
+        if (task == null || mc.player == null || mc.level == null || mc.gameMode == null) { Rotator.clear(); return; }
+        if (mc.screen instanceof AbstractSignEditScreen sign) { handleSign(sign); return; }
+        if (paused) { Rotator.clear(); return; }
         if (!mc.player.isAlive()) { stop(true); return; }
         if (Config.minHealth > 0 && mc.player.getHealth() <= Config.minHealth && !mc.player.getAbilities().invulnerable) {
             msg("§cHealth low — paused. Heal up and resume from the menu.");
@@ -105,7 +128,39 @@ public class Build1Client implements ClientModInitializer {
             stop(false);
             return;
         }
-        if (task != null && task.finished()) { task.stop(); task = null; Bot.releaseKeys(); }
+        if (task != null && task.finished()) { task.stop(); task = null; Bot.releaseKeys(); Rotator.clear(); }
+        Rotator.tick();
+    }
+
+    /** A sign we just placed opened the editor: type the schematic's text (or leave blank) and close it. */
+    private static void handleSign(AbstractSignEditScreen screen) {
+        if (signScreen != screen) {
+            signScreen = screen;
+            signDelay = Config.closet() ? 12 + Bot.rng().nextInt(20) : 1; // a person takes a moment
+        }
+        if (signDelay-- > 0) return;
+        SignEditScreenAccessor acc = (SignEditScreenAccessor) screen;
+        if (Config.signText) {
+            try {
+                var schem = LitematicaBridge.schematicWorld();
+                SignBlockEntity mine = acc.build1$getSign();
+                if (schem != null && mine != null && schem.getBlockEntity(mine.getBlockPos()) instanceof SignBlockEntity want) {
+                    String[] lines = acc.build1$getMessages();
+                    for (int i = 0; i < lines.length && i < 4; i++) lines[i] = want.getFrontText().getMessage(i, false).getString();
+                }
+            } catch (Throwable ignored) {}
+        }
+        screen.onClose(); // sends the text to the server and closes
+        signScreen = null;
+    }
+
+    public static void toggleChest() {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.hitResult instanceof BlockHitResult bhr && mc.hitResult.getType() == HitResult.Type.BLOCK
+                && ChestRegistry.isContainer(mc.level.getBlockState(bhr.getBlockPos()))) {
+            boolean on = ChestRegistry.toggle(bhr.getBlockPos());
+            msg((on ? "§aAdded" : "§cRemoved") + "§r materials chest at " + bhr.getBlockPos().toShortString() + " §7(" + ChestRegistry.count() + " total)");
+        } else msg("§cLook at a chest, barrel or shulker box first.");
     }
 
     // ---------- actions (used by menu, keys and commands) ----------
@@ -140,6 +195,7 @@ public class Build1Client implements ClientModInitializer {
     }
 
     public static void stop(boolean announce) {
+        Rotator.clear();
         if (task != null) {
             task.stop();
             if (announce) msg("Stopped.");

@@ -36,7 +36,7 @@ public final class Bot {
         p.setYHeadRot(yaw);
     }
 
-    /** Sets rotation AND tells the server right now, so the next action packet is judged with it. */
+    /** Blatant: sets rotation AND tells the server right now, so the next action packet is judged with it. */
     public static void faceNow(float yaw, float pitch) {
         LocalPlayer p = mc().player;
         if (p == null || mc().getConnection() == null) return;
@@ -49,7 +49,8 @@ public final class Bot {
     public static double reach() {
         LocalPlayer p = mc().player;
         double real = p == null ? 4.5 : p.blockInteractionRange();
-        return Math.min(Config.reach, real) - 0.05;
+        double r = Math.min(Config.reach, real) - 0.05;
+        return Config.closet() ? Math.min(r, 4.2) : r;
     }
 
     /** Face of pos that points most toward the player's eye. */
@@ -87,6 +88,7 @@ public final class Bot {
             inv.setSelectedSlot(slot);
             return true;
         }
+        if (Config.closet() && !still()) { releaseKeys(); return false; } // no inventory clicks while moving
         int hb = Config.hotbarSlot;
         mc().gameMode.handleInventoryMouseClick(p.inventoryMenu.containerId, slot, hb, ClickType.SWAP, p);
         inv.setSelectedSlot(hb);
@@ -110,14 +112,34 @@ public final class Bot {
 
     private static boolean pressing;
 
-    public static void keys(boolean forward, boolean jump, boolean sneak) {
+    public static void keys(boolean forward, boolean jump, boolean sneak) { keys(forward, jump, sneak, false); }
+
+    public static void keys(boolean forward, boolean jump, boolean sneak, boolean sprint) {
         var o = mc().options;
         o.keyUp.setDown(forward);
         o.keyJump.setDown(jump);
         o.keyShift.setDown(sneak);
-        o.keySprint.setDown(false);
-        pressing = forward || jump || sneak;
+        o.keySprint.setDown(sprint);
+        if (!sprint && mc().player != null && mc().player.isSprinting() && !forward) mc().player.setSprinting(false);
+        pressing = forward || jump || sneak || sprint;
     }
+
+    /** Roughly standing still (closet waits for this before inventory clicks). */
+    public static boolean still() {
+        var p = mc().player;
+        var v = p.getDeltaMovement();
+        return p.onGround() && v.x * v.x + v.z * v.z < 0.0025;
+    }
+
+    private static final java.util.Random R = new java.util.Random();
+
+    /** Human-ish pause between actions in closet, configured delay in blatant. */
+    public static int actionPause() {
+        if (!Config.closet()) return Config.actionDelay;
+        return Math.max(Config.actionDelay, 2) + R.nextInt(3) + (R.nextInt(12) == 0 ? 4 + R.nextInt(6) : 0);
+    }
+
+    public static java.util.Random rng() { return R; }
 
     public static void releaseKeys() {
         if (!pressing) return;

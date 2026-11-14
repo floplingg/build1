@@ -107,6 +107,34 @@ public final class LitematicaBridge {
         }
     }
 
+    /** Filter from Litematica's render layer range (Layer mode in its menu). Null = everything. */
+    public static java.util.function.Predicate<BlockPos> layerFilter() {
+        if (!installed()) return null;
+        try {
+            Object range = callStatic(Class.forName("fi.dy.masa.litematica.data.DataManager"), "getRenderLayerRange");
+            if (range == null) return null;
+            Method byPos = null, byInts = null;
+            for (Method m : range.getClass().getMethods()) {
+                if (!m.getName().equals("isPositionWithinRange")) continue;
+                Class<?>[] t = m.getParameterTypes();
+                if (t.length == 1 && t[0].isAssignableFrom(BlockPos.class)) byPos = m;
+                if (t.length == 3 && t[0] == int.class) byInts = m;
+            }
+            final Method fp = byPos, fi = byInts;
+            if (fp == null && fi == null) return null;
+            return pos -> {
+                try {
+                    Object r = fp != null ? fp.invoke(range, pos) : fi.invoke(range, pos.getX(), pos.getY(), pos.getZ());
+                    return !(r instanceof Boolean b) || b;
+                } catch (Throwable t) {
+                    return true;
+                }
+            };
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
     private static Box placementBox(Object pl) {
         for (String m : new String[]{"getEclosingBox", "getEnclosingBox"}) {
             Box b = toBox(call(pl, m));

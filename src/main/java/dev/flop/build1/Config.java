@@ -10,6 +10,29 @@ import net.fabricmc.loader.api.FabricLoader;
 
 /** Tiny properties-file config at config/build1.properties. */
 public final class Config {
+    public enum Mode {
+        /** Snappy rotations, packet rotations, air-place, multiple blocks per tick. Fast, obvious. */
+        BLATANT,
+        /** Looks like a player: smooth mouse-like aim, only clicks what the crosshair really sees, human delays. */
+        CLOSET
+    }
+
+    public static Mode mode = Mode.CLOSET;
+    /** Blatant only: place blocks in mid-air with nothing to click against. */
+    public static boolean airPlace = true;
+    /** Only build what Litematica's render layers show (its Layer mode). */
+    public static boolean followLayers = true;
+    /** Fill sign text from the schematic and close the sign editor. */
+    public static boolean signText = true;
+
+    /** Survival: refill from materials chests when out of blocks (and every restockMinutes). */
+    public static boolean survival = true;
+    public static int restockMinutes = 2;
+    /** Materials chests, saved as x,y,z;x,y,z */
+    public static String chests = "";
+
+    public static boolean closet() { return mode == Mode.CLOSET; }
+
     /** Ticks to wait between placing / starting to break blocks (0 = every tick). */
     public static int actionDelay = 1;
     /** Max blocks placed in one tick. */
@@ -51,6 +74,13 @@ public final class Config {
         avoidLava = b(p, "avoidLava", avoidLava);
         minHealth = i(p, "minHealth", minHealth, 0, 19);
         hud = b(p, "hud", hud);
+        airPlace = b(p, "airPlace", airPlace);
+        followLayers = b(p, "followLayers", followLayers);
+        signText = b(p, "signText", signText);
+        survival = b(p, "survival", survival);
+        restockMinutes = i(p, "restockMinutes", restockMinutes, 1, 30);
+        chests = p.getProperty("chests", "");
+        try { mode = Mode.valueOf(p.getProperty("mode", mode.name()).trim().toUpperCase()); } catch (IllegalArgumentException ignored) {}
         try { reach = Math.max(2, Math.min(6, Double.parseDouble(p.getProperty("reach", "" + reach)))); } catch (NumberFormatException ignored) {}
     }
 
@@ -67,6 +97,13 @@ public final class Config {
         p.setProperty("minHealth", "" + minHealth);
         p.setProperty("reach", "" + reach);
         p.setProperty("hud", "" + hud);
+        p.setProperty("airPlace", "" + airPlace);
+        p.setProperty("followLayers", "" + followLayers);
+        p.setProperty("signText", "" + signText);
+        p.setProperty("survival", "" + survival);
+        p.setProperty("restockMinutes", "" + restockMinutes);
+        p.setProperty("chests", chests);
+        p.setProperty("mode", mode.name());
         try {
             Files.createDirectories(file().getParent());
             try (Writer w = Files.newBufferedWriter(file())) { p.store(w, "Build1 settings"); }

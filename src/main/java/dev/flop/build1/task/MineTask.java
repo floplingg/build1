@@ -33,42 +33,44 @@ public final class MineTask implements Task {
 
     @Override public String name() { return "Mine area"; }
     @Override public boolean finished() { return finished; }
-    @Override public void stop() { walker.stop(); breaker.reset(); }
+    @Override public void stop() { walker.stop(); breaker.reset(); Rotator.clear(); Bot.releaseKeys(); }
 
     @Override public void tick() {
         t++;
         LocalPlayer p = Bot.mc().player;
+        if (Bot.mc().screen != null && Config.closet()) { state = "paused (menu open)"; Bot.releaseKeys(); return; }
         if (t % 10 == 1 || work.isEmpty()) scan();
         if (finished) return;
 
         if (breaker.target() != null) {
             BlockPos bp = breaker.target();
-            if (!Safety.inReach(bp) || breaker.ticks() > 600 || !Safety.safeToBreak(bp, Config.avoidLava)) {
+            if (!Safety.inReach(bp) || breaker.ticks() > 600 || breaker.blocked() > 40 || !Safety.safeToBreak(bp, Config.avoidLava)) {
                 breaker.reset();
+                Rotator.clear();
                 skip(bp, 200);
             } else {
                 state = "mining";
-                if (breaker.tick(bp)) { mined++; work.remove(bp); cooldown = Config.actionDelay; }
+                if (breaker.tick(bp)) { mined++; work.remove(bp); cooldown = Bot.actionPause(); }
                 return;
             }
         }
         if (cooldown > 0) { cooldown--; if (walker.busy()) walker.tick(); return; }
 
-        // in reach: highest first (so we don't undercut ourselves), then nearest
+        // in reach: in serpentine order (highest layer first so we never undercut ourselves)
         Vec3 eye = Bot.eye();
         BlockPos pick = null;
-        double bestScore = Double.MAX_VALUE;
+        long bestKey = Long.MAX_VALUE;
         for (BlockPos b : work) {
             if (skipped(b)) continue;
-            double d = eye.distanceTo(Vec3.atCenterOf(b));
-            if (d > Bot.reach()) continue;
-            double score = d - b.getY() * 0.01;
-            if (score < bestScore && Safety.safeToBreak(b, Config.avoidLava)) { bestScore = score; pick = b; }
+            if (eye.distanceTo(Vec3.atCenterOf(b)) > Bot.reach()) continue;
+            long k = Order.key(b, box, true);
+            if (k < bestKey && Safety.safeToBreak(b, Config.avoidLava)
+                    && (!Config.closet() || Breaker.visiblePoint(b) != null)) { bestKey = k; pick = b; }
         }
         if (pick != null) {
             walker.stop();
             state = "mining";
-            if (breaker.tick(pick)) { mined++; work.remove(pick); cooldown = Config.actionDelay; }
+            if (breaker.tick(pick)) { mined++; work.remove(pick); Rotator.clear(); cooldown = Bot.actionPause(); }
             return;
         }
 
@@ -81,11 +83,11 @@ public final class MineTask implements Task {
         if (walker.status() == Walker.Status.FAILED && walkTarget != null) { skip(walkTarget, 100); walker.stop(); }
 
         BlockPos target = null;
-        double bd = Double.MAX_VALUE;
+        long bk = Long.MAX_VALUE;
         for (BlockPos b : work) {
             if (skipped(b)) continue;
-            double d = p.position().distanceToSqr(Vec3.atCenterOf(b));
-            if (d < bd) { bd = d; target = b; }
+            long k = Order.key(b, box, true);
+            if (k < bk) { bk = k; target = b; }
         }
         if (target == null) { nextLayer(); return; }
         if (!Config.walk) { state = "waiting (walking off)"; for (BlockPos b : work) skip(b, 40); return; }
@@ -93,6 +95,7 @@ public final class MineTask implements Task {
         lastPlan = t;
         walkTarget = target;
         state = "pathing";
+        Rotator.clear();
         List<PathFinder.Step> path = PathFinder.find(p.blockPosition(), new ReachGoal(target, Bot.reach() - 0.5),
                 false, pos -> false);
         if (path == null) { skip(target, 200); return; }
@@ -150,7 +153,7 @@ public final class MineTask implements Task {
 
     @Override public List<String> hud() {
         List<String> l = new ArrayList<>();
-        l.add("§eMining§r " + box.sizeX() + "x" + box.sizeY() + "x" + box.sizeZ() + (pass > 1 ? " §7(pass " + pass + ")" : ""));
+        l.add("§eMining§r §7[" + Config.mode.name().toLowerCase() + "]§r " + box.sizeX() + "x" + box.sizeY() + "x" + box.sizeZ() + (pass > 1 ? " §7(pass " + pass + ")" : ""));
         l.add("Layer " + (box.max().getY() - layer + 1) + "/" + box.sizeY() + " §7(y=" + layer + ")§r  left: " + work.size());
         l.add("Mined " + mined + "  §7" + state);
         if (unknown > 0) l.add("§7" + unknown + " positions in unloaded chunks");

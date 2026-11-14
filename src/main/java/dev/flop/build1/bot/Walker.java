@@ -1,14 +1,17 @@
 package dev.flop.build1.bot;
 
+import dev.flop.build1.Config;
 import java.util.List;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
 /** Follows a PathFinder path by holding movement keys and steering the camera. */
@@ -25,6 +28,7 @@ public final class Walker {
     private int stuck;
     private double lastDist = Double.MAX_VALUE;
     private Status status = Status.IDLE;
+    private float walkPitch = 10f;
 
     public Status status() { return status; }
     public boolean busy() { return status == Status.WALKING; }
@@ -35,6 +39,7 @@ public final class Walker {
         idx = 0;
         stuck = 0;
         lastDist = Double.MAX_VALUE;
+        walkPitch = 4f + Bot.rng().nextFloat() * 14f;
         status = p == null ? Status.FAILED : (p.isEmpty() ? Status.DONE : Status.WALKING);
     }
 
@@ -59,7 +64,7 @@ public final class Walker {
     public void tick() {
         if (status != Status.WALKING) return;
         LocalPlayer p = Bot.mc().player;
-        if (idx >= path.size()) { status = Status.DONE; Bot.releaseKeys(); return; }
+        if (idx >= path.size()) { finish(); return; }
         PathFinder.Step step = path.get(idx);
         BlockPos node = step.pos();
         Vec3 pos = p.position();
@@ -67,56 +72,99 @@ public final class Walker {
         double horiz = Math.sqrt(dx * dx + dz * dz);
         double dy = node.getY() - pos.y;
 
-        if (step.pillar()) {
-            pillar(p, node);
-            return;
-        }
+        if (step.pillar()) { pillar(p, node); return; }
 
-        if (horiz < 0.3 && Math.abs(dy) < 0.6 && (p.onGround() || p.isInWater())) {
+        if (horiz < (Config.closet() ? 0.4 : 0.3) && Math.abs(dy) < 0.6 && (p.onGround() || p.isInWater())) {
             idx++;
             stuck = 0;
             lastDist = Double.MAX_VALUE;
-            if (idx >= path.size()) { status = Status.DONE; Bot.releaseKeys(); }
+            if (idx >= path.size()) finish();
             return;
         }
-        // steer
-        float yaw = (float) (Math.atan2(dz, dx) * 180.0 / Math.PI) - 90f;
-        Bot.setRotation(yaw, 10f);
+        // Steer toward a point a little further along the path so turns are rounder.
+        Vec3 aimAt = new Vec3(node.getX() + 0.5, 0, node.getZ() + 0.5);
+        if (Config.closet() && idx + 1 < path.size() && horiz < 1.2 && !path.get(idx + 1).pillar()) {
+            BlockPos nx = path.get(idx + 1).pos();
+            aimAt = aimAt.lerp(new Vec3(nx.getX() + 0.5, 0, nx.getZ() + 0.5), 0.5);
+        }
+        float yaw = (float) (Math.atan2(aimAt.z - pos.z, aimAt.x - pos.x) * 180.0 / Math.PI) - 90f;
+        boolean facing;
+        if (Config.closet()) {
+            Rotator.aim(yaw, walkPitch);
+            facing = Math.abs(Mth.wrapDegrees(p.getYRot() - yaw)) < 50;
+        } else {
+            Bot.setRotation(yaw, 10f);
+            facing = true;
+        }
         boolean jump = (dy > 0.5 && horiz < 1.6) || p.isInWater();
-        boolean forward = horiz > 0.12;
-        // sneak when close to the target so we don't overshoot off edges
-        Bot.keys(forward, jump, false);
+        boolean forward = horiz > 0.12 && facing;
+        boolean sprint = forward && !jump && straightAhead() >= 4;
+        Bot.keys(forward, jump, false, sprint);
 
         double dist = horiz + Math.abs(dy);
         if (dist < lastDist - 0.05) { lastDist = dist; stuck = 0; } else stuck++;
-        if (stuck > 50 || horiz > 4 || dy < -4.5) fail();
+        if (stuck > (Config.closet() ? 70 : 50) || horiz > 4 || dy < -4.5) fail();
+    }
+
+    /** How many upcoming steps continue in the same flat direction. */
+    private int straightAhead() {
+        if (idx + 1 >= path.size()) return 0;
+        BlockPos a = path.get(idx).pos(), b = path.get(idx + 1).pos();
+        int sx = b.getX() - a.getX(), sz = b.getZ() - a.getZ();
+        int n = 1;
+        for (int i = idx + 1; i + 1 < path.size(); i++) {
+            BlockPos c = path.get(i).pos(), d = path.get(i + 1).pos();
+            if (d.getX() - c.getX() != sx || d.getZ() - c.getZ() != sz || d.getY() != c.getY() || path.get(i + 1).pillar()) break;
+            n++;
+        }
+        return n;
     }
 
     private void pillar(LocalPlayer p, BlockPos node) {
         BlockPos under = node.below(); // the block we need to create
         var lvl = Bot.mc().level;
         if (!lvl.getBlockState(under).canBeReplaced()) {
-            // already placed: wait to land on it
             Bot.keys(false, false, false);
-            if (p.onGround() && p.getY() >= node.getY() - 0.1) { idx++; stuck = 0; if (idx >= path.size()) { status = Status.DONE; Bot.releaseKeys(); } }
+            if (p.onGround() && p.getY() >= node.getY() - 0.1) { idx++; stuck = 0; if (idx >= path.size()) finish(); }
             else if (++stuck > 40) fail();
             return;
         }
-        Bot.setRotation(p.getYRot(), 90f);
-        if (p.onGround()) { Bot.keys(false, true, false); stuck++; if (stuck > 40) fail(); return; }
-        Bot.keys(false, false, false);
-        if (p.getY() < under.getY() + 1.05) return; // not high enough yet
+        BlockPos support = under.below();
+        Vec3 top = Bot.faceCenter(support, Direction.UP);
+        float downPitch = Config.closet() ? 82f + Bot.rng().nextFloat() * 6f : 90f;
+        if (Config.closet()) Rotator.aim(p.getYRot(), downPitch); else Bot.setRotation(p.getYRot(), 90f);
+
         int slot = scaffoldSlot();
         if (slot < 0) {
             if (!Bot.creativeGive(Items.DIRT)) { fail(); return; }
-        } else if (!Bot.hold(slot)) return;
+        } else if (p.getInventory().getSelectedSlot() != slot && slot < 9) {
+            p.getInventory().setSelectedSlot(slot);
+        } else if (slot >= 9) {
+            Bot.hold(slot);
+            return;
+        }
+        if (Config.closet() && !Rotator.settled()) { Bot.keys(false, false, false); return; }
+        if (p.onGround()) { Bot.keys(false, true, false); if (++stuck > 60) fail(); return; }
+        Bot.keys(false, false, false);
+        if (p.getY() < under.getY() + 1.05) return; // not high enough yet
         if (!(p.getMainHandItem().getItem() instanceof BlockItem)) return;
-        BlockPos support = under.below();
-        Vec3 hv = Bot.faceCenter(support, Direction.UP);
-        float[] a = Bot.anglesTo(Bot.eye(), hv);
-        Bot.faceNow(a[0], a[1]);
-        Bot.mc().gameMode.useItemOn(p, InteractionHand.MAIN_HAND, new BlockHitResult(hv, Direction.UP, support, false));
+
+        BlockHitResult hit;
+        if (Config.closet()) {
+            hit = PlacementSolver.raycast(Bot.eye(), p.getYRot(), p.getXRot(), Bot.reach());
+            if (hit.getType() != HitResult.Type.BLOCK || !hit.getBlockPos().equals(support) || hit.getDirection() != Direction.UP) return;
+        } else {
+            float[] a = Bot.anglesTo(Bot.eye(), top);
+            Bot.faceNow(a[0], a[1]);
+            hit = new BlockHitResult(top, Direction.UP, support, false);
+        }
+        Bot.mc().gameMode.useItemOn(p, InteractionHand.MAIN_HAND, hit);
         p.swing(InteractionHand.MAIN_HAND);
+    }
+
+    private void finish() {
+        status = Status.DONE;
+        Bot.releaseKeys();
     }
 
     private void fail() {

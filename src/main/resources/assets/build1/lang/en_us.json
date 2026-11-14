@@ -4,5 +4,6 @@
   "key.build1.stop": "Stop Build1",
   "key.build1.pause": "Pause / resume Build1",
   "key.build1.pos1": "Miner: set corner 1 (looked-at block)",
-  "key.build1.pos2": "Miner: set corner 2 (looked-at block)"
+  "key.build1.pos2": "Miner: set corner 2 (looked-at block)",
+  "key.build1.chest": "Survival: add/remove materials chest (looked-at)"
 }
